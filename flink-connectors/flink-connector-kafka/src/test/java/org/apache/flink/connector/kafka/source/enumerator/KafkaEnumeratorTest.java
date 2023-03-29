@@ -264,6 +264,8 @@ public class KafkaEnumeratorTest {
                                 ENABLE_PERIODIC_PARTITION_DISCOVERY,
                                 PRE_EXISTING_TOPICS,
                                 preexistingAssignments,
+                                Collections.emptySet(),
+                                true,
                                 new Properties())) {
             enumerator.start();
             runPeriodicPartitionDiscovery(context2);
@@ -293,6 +295,8 @@ public class KafkaEnumeratorTest {
                                 ENABLE_PERIODIC_PARTITION_DISCOVERY,
                                 PRE_EXISTING_TOPICS,
                                 Collections.emptySet(),
+                                Collections.emptySet(),
+                                false,
                                 properties)) {
             enumerator.start();
 
@@ -416,6 +420,8 @@ public class KafkaEnumeratorTest {
                 enablePeriodicPartitionDiscovery,
                 topics,
                 Collections.emptySet(),
+                Collections.emptySet(),
+                false,
                 new Properties());
     }
 
@@ -428,6 +434,8 @@ public class KafkaEnumeratorTest {
             boolean enablePeriodicPartitionDiscovery,
             Collection<String> topicsToSubscribe,
             Set<TopicPartition> assignedPartitions,
+            Set<TopicPartition> unassignedInitialPartitons,
+            boolean initialDiscoveryFinished,
             Properties overrideProperties) {
         // Use a TopicPatternSubscriber so that no exception if a subscribed topic hasn't been
         // created yet.
@@ -454,7 +462,9 @@ public class KafkaEnumeratorTest {
                 props,
                 enumContext,
                 Boundedness.CONTINUOUS_UNBOUNDED,
-                assignedPartitions);
+                assignedPartitions,
+                unassignedInitialPartitons,
+                initialDiscoveryFinished);
     }
 
     // ---------------------
