@@ -20,6 +20,7 @@ package org.apache.flink.connector.kafka.source.enumerator;
 
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.ReaderInfo;
+import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.api.connector.source.mocks.MockSplitEnumeratorContext;
 import org.apache.flink.connector.kafka.source.KafkaSourceOptions;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.NoStoppingOffsetsInitializer;
@@ -50,6 +51,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -175,7 +177,8 @@ public class KafkaEnumeratorTest {
                         createEnumerator(
                                 context,
                                 ENABLE_PERIODIC_PARTITION_DISCOVERY,
-                                INCLUDE_DYNAMIC_TOPIC);
+                                INCLUDE_DYNAMIC_TOPIC,
+                                OffsetsInitializer.latest());
                 AdminClient adminClient = KafkaSourceTestEnv.getAdminClient()) {
 
             startEnumeratorAndRegisterReaders(context, enumerator);
@@ -211,6 +214,19 @@ public class KafkaEnumeratorTest {
                     Arrays.asList(READER0, READER1),
                     Collections.singleton(DYNAMIC_TOPIC_NAME),
                     3);
+
+            // new partitions use EARLIEST_OFFSET, while initial partitions use LATEST_OFFSET
+            List<KafkaPartitionSplit> initialPartitionAssign =
+                    getAllAssignSplits(context, PRE_EXISTING_TOPICS);
+            assertThat(initialPartitionAssign)
+                    .extracting(KafkaPartitionSplit::getStartingOffset)
+                    .containsOnly(KafkaPartitionSplit.LATEST_OFFSET);
+            List<KafkaPartitionSplit> newPartitionAssign =
+                    getAllAssignSplits(context, Collections.singleton(DYNAMIC_TOPIC_NAME));
+            assertThat(newPartitionAssign)
+                    .extracting(KafkaPartitionSplit::getStartingOffset)
+                    .containsOnly(KafkaPartitionSplit.EARLIEST_OFFSET);
+
         } finally {
             try (AdminClient adminClient = KafkaSourceTestEnv.getAdminClient()) {
                 adminClient.deleteTopics(Collections.singleton(DYNAMIC_TOPIC_NAME)).all().get();
@@ -263,6 +279,7 @@ public class KafkaEnumeratorTest {
                         createEnumerator(
                                 context2,
                                 ENABLE_PERIODIC_PARTITION_DISCOVERY,
+                                OffsetsInitializer.latest(),
                                 PRE_EXISTING_TOPICS,
                                 preexistingAssignments,
                                 Collections.emptySet(),
@@ -294,6 +311,7 @@ public class KafkaEnumeratorTest {
                         createEnumerator(
                                 context,
                                 ENABLE_PERIODIC_PARTITION_DISCOVERY,
+                                OffsetsInitializer.earliest(),
                                 PRE_EXISTING_TOPICS,
                                 Collections.emptySet(),
                                 Collections.emptySet(),
@@ -434,13 +452,17 @@ public class KafkaEnumeratorTest {
             MockSplitEnumeratorContext<KafkaPartitionSplit> enumContext,
             boolean enablePeriodicPartitionDiscovery) {
         return createEnumerator(
-                enumContext, enablePeriodicPartitionDiscovery, EXCLUDE_DYNAMIC_TOPIC);
+                enumContext,
+                enablePeriodicPartitionDiscovery,
+                EXCLUDE_DYNAMIC_TOPIC,
+                OffsetsInitializer.earliest());
     }
 
     private KafkaSourceEnumerator createEnumerator(
             MockSplitEnumeratorContext<KafkaPartitionSplit> enumContext,
             boolean enablePeriodicPartitionDiscovery,
-            boolean includeDynamicTopic) {
+            boolean includeDynamicTopic,
+            OffsetsInitializer startingOffsetsInitializer) {
         List<String> topics = new ArrayList<>(PRE_EXISTING_TOPICS);
         if (includeDynamicTopic) {
             topics.add(DYNAMIC_TOPIC_NAME);
@@ -448,6 +470,7 @@ public class KafkaEnumeratorTest {
         return createEnumerator(
                 enumContext,
                 enablePeriodicPartitionDiscovery,
+                startingOffsetsInitializer,
                 topics,
                 Collections.emptySet(),
                 Collections.emptySet(),
@@ -462,6 +485,7 @@ public class KafkaEnumeratorTest {
     private KafkaSourceEnumerator createEnumerator(
             MockSplitEnumeratorContext<KafkaPartitionSplit> enumContext,
             boolean enablePeriodicPartitionDiscovery,
+            OffsetsInitializer startingOffsetsInitializer,
             Collection<String> topicsToSubscribe,
             Set<TopicPartition> assignedPartitions,
             Set<TopicPartition> unassignedInitialPartitons,
@@ -474,7 +498,6 @@ public class KafkaEnumeratorTest {
         Pattern topicPattern = Pattern.compile(topicNameJoiner.toString());
         KafkaSubscriber subscriber = KafkaSubscriber.getTopicPatternSubscriber(topicPattern);
 
-        OffsetsInitializer startingOffsetsInitializer = OffsetsInitializer.earliest();
         OffsetsInitializer stoppingOffsetsInitializer = new NoStoppingOffsetsInitializer();
 
         Properties props =
@@ -569,6 +592,24 @@ public class KafkaEnumeratorTest {
                 (reader, topicPartitions) ->
                         allTopicPartitionsFromAssignment.addAll(topicPartitions));
         assertThat(actualTopicPartitions).isEqualTo(allTopicPartitionsFromAssignment);
+    }
+
+    private List<KafkaPartitionSplit> getAllAssignSplits(
+            MockSplitEnumeratorContext<KafkaPartitionSplit> context, Set<String> topics) {
+
+        List<KafkaPartitionSplit> allSplits = new ArrayList<>();
+        List<SplitsAssignment<KafkaPartitionSplit>> splitsAssignmentSequence =
+                context.getSplitsAssignmentSequence();
+        for (SplitsAssignment<KafkaPartitionSplit> splitsAssignment : splitsAssignmentSequence) {
+            List<KafkaPartitionSplit> splitsOfOnceAssignment =
+                    splitsAssignment.assignment().values().stream()
+                            .flatMap(splits -> splits.stream())
+                            .filter(split -> topics.contains(split.getTopic()))
+                            .collect(Collectors.toList());
+            allSplits.addAll(splitsOfOnceAssignment);
+        }
+
+        return allSplits;
     }
 
     private Set<TopicPartition> asEnumState(Map<Integer, List<KafkaPartitionSplit>> assignments) {
